@@ -110,7 +110,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v8</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v9</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -218,9 +218,14 @@ function renderFileList() {
   fileListEl.innerHTML = '';
   files.forEach((item, i) => {
     const div = document.createElement('div');
+    const isLarge = item.file.size > 500 * 1024;
     div.className = `file-item ${item.status}`;
     const statusText = {pending:'Pending', processing:'Analyzing...', done:'✓ Complete', error:'✗ Failed'}[item.status] || '';
-    div.innerHTML = `<div class="file-dot"></div><span class="file-name">${item.file.name}</span><span class="file-status">${statusText}</span>${item.status==='pending'?`<button class="file-remove" onclick="removeFile(${i})">✕</button>`:''}`;
+    const sizeKB = Math.round(item.file.size / 1024);
+    const warning = (item.status === 'pending' && isLarge)
+      ? `<span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--red);margin-left:6px;">⚠ ${sizeKB} KB — large file, consider compressing in Acrobat</span>`
+      : `<span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text-dim);margin-left:6px;">${sizeKB} KB</span>`;
+    div.innerHTML = `<div class="file-dot"></div><span class="file-name">${item.file.name}</span>${warning}<span class="file-status">${statusText}</span>${item.status==='pending'?`<button class="file-remove" onclick="removeFile(${i})">✕</button>`:''}`;
     fileListEl.appendChild(div);
   });
 }
@@ -377,12 +382,14 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     results.push(item.result);
     renderFileList();
 
-    // Pause between files to avoid rate limits (30k tokens/min)
-    const waitSecs = 10;
+    // Dynamic pause — longer after large files to avoid rate limits
     if (i < files.length - 1) {
+      const isLargeFile = item.file.size > 500 * 1024;
+      const waitSecs = isLargeFile ? 30 : 10;
       fileLog.betweenFilePauseSecs = waitSecs;
+      const pauseReason = isLargeFile ? 'large file detected — extended pause' : 'rate limit pause';
       for (let s = waitSecs; s > 0; s--) {
-        document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (rate limit pause)...`;
+        document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (${pauseReason})...`;
         await new Promise(r => setTimeout(r, 1000));
       }
     }
@@ -500,7 +507,7 @@ document.getElementById('excelBtn').addEventListener('click', () => {
     const summary = perfLog.batchSummary || {};
     const perfRows = [
       ['PMI Northeast Atlanta — Performance Log'],
-      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Between-File Pause: ${summary.betweenFilePauseSecs || 10}s`],
+      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause: 10s standard / 30s after large files (>500 KB)`],
       [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`],
       [],
       ['File Name', 'File Size (KB)', 'Start Time', 'Duration (secs)', 'Attempts', 'Rate Limit Hits', 'Between-File Pause (secs)', 'Outcome']
