@@ -110,7 +110,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v7</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v8</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -303,7 +303,7 @@ Respond ONLY with valid JSON, no markdown fences:
   return JSON.parse(raw.replace(/```json|```/g,'').trim());
 }
 
-let globalResults = [], globalMonth = '';
+let globalResults = [], globalMonth = '', perfLog = [];
 
 document.getElementById('runBtn').addEventListener('click', async () => {
   if (!getApiKey()) { showError('Please enter and save your Anthropic API key first.'); return; }
@@ -316,6 +316,8 @@ document.getElementById('runBtn').addEventListener('click', async () => {
   const month = document.getElementById('reportMonth').value;
   const monthDisplay = month ? new Date(month+'-02').toLocaleDateString('en-US',{month:'long',year:'numeric'}) : 'this period';
   const results = [];
+  perfLog = [];
+  const batchStart = Date.now();
 
   for (let i = 0; i < files.length; i++) {
     const item = files[i];
@@ -323,22 +325,38 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     renderFileList();
     const pct = Math.round((i / files.length) * 100);
     document.getElementById('progressFill').style.width = pct + '%';
-    document.getElementById('progressLabel').textContent = `Analyzing ${i+1} of ${files.length}: ${item.file.name}`;
+
+    // Performance tracking for this file
+    const fileLog = {
+      fileName: item.file.name,
+      fileSizeKB: Math.round(item.file.size / 1024),
+      startTime: new Date().toLocaleTimeString(),
+      startMs: Date.now(),
+      endMs: null,
+      durationSecs: null,
+      attempts: 0,
+      rateLimitHits: 0,
+      outcome: 'pending',
+      betweenFilePauseSecs: 0
+    };
 
     // Analyze with automatic retry on rate limit errors
     const maxRetries = 2;
     let attempt = 0;
     let success = false;
     while (attempt <= maxRetries && !success) {
+      fileLog.attempts = attempt + 1;
       try {
         document.getElementById('progressLabel').textContent = `[${i+1}/${files.length}] ${item.file.name} — Analyzing...`;
-      item.result = await analyzePDF(item.file, monthDisplay);
+        item.result = await analyzePDF(item.file, monthDisplay);
         item.status = 'done';
+        fileLog.outcome = 'success';
         success = true;
       } catch (err) {
         const isRateLimit = err.message && err.message.toLowerCase().includes('rate limit');
         if (isRateLimit && attempt < maxRetries) {
           attempt++;
+          fileLog.rateLimitHits++;
           const retrySecs = 60;
           for (let s = retrySecs; s > 0; s--) {
             document.getElementById('progressLabel').textContent = `Rate limit hit — retrying ${item.file.name} in ${s}s (attempt ${attempt} of ${maxRetries})...`;
@@ -346,23 +364,43 @@ document.getElementById('runBtn').addEventListener('click', async () => {
           }
         } else {
           item.status = 'error';
+          fileLog.outcome = isRateLimit ? 'failed-rate-limit' : 'failed-error';
           item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: '+err.message, bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
           break;
         }
       }
     }
+
+    fileLog.endMs = Date.now();
+    fileLog.durationSecs = Math.round((fileLog.endMs - fileLog.startMs) / 1000);
+
     results.push(item.result);
     renderFileList();
 
     // Pause between files to avoid rate limits (30k tokens/min)
+    const waitSecs = 10;
     if (i < files.length - 1) {
-      const waitSecs = 10;
+      fileLog.betweenFilePauseSecs = waitSecs;
       for (let s = waitSecs; s > 0; s--) {
         document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (rate limit pause)...`;
         await new Promise(r => setTimeout(r, 1000));
       }
     }
+
+    perfLog.push(fileLog);
   }
+
+  // Batch summary
+  const batchDurationSecs = Math.round((Date.now() - batchStart) / 1000);
+  const totalRetries = perfLog.reduce((s, r) => s + r.rateLimitHits, 0);
+  perfLog.batchSummary = {
+    totalFiles: files.length,
+    totalDurationSecs: batchDurationSecs,
+    totalRateLimitHits: totalRetries,
+    betweenFilePauseSecs: 10,
+    runDate: new Date().toLocaleDateString('en-US'),
+    runTime: new Date().toLocaleTimeString()
+  };
 
   document.getElementById('progressFill').style.width = '100%';
   document.getElementById('progressLabel').textContent = `Complete — ${results.length} communities analyzed.`;
@@ -456,6 +494,35 @@ document.getElementById('excelBtn').addEventListener('click', () => {
   ws['!rows'] = rows.map((_,i) => i < 4 ? {hpt:18} : {hpt:60});
 
   XLSX.utils.book_append_sheet(wb, ws, 'Financial Review');
+
+  // Performance log sheet
+  if (perfLog.length > 0) {
+    const summary = perfLog.batchSummary || {};
+    const perfRows = [
+      ['PMI Northeast Atlanta — Performance Log'],
+      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Between-File Pause: ${summary.betweenFilePauseSecs || 10}s`],
+      [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`],
+      [],
+      ['File Name', 'File Size (KB)', 'Start Time', 'Duration (secs)', 'Attempts', 'Rate Limit Hits', 'Between-File Pause (secs)', 'Outcome']
+    ];
+    perfLog.forEach(r => {
+      perfRows.push([
+        r.fileName, r.fileSizeKB, r.startTime, r.durationSecs,
+        r.attempts, r.rateLimitHits, r.betweenFilePauseSecs, r.outcome
+      ]);
+    });
+    // Totals row
+    perfRows.push([
+      'TOTALS', '', '', `=SUM(D6:D${5+perfLog.length})`,
+      '', `=SUM(F6:F${5+perfLog.length})`, '', ''
+    ]);
+
+    const ws2 = XLSX.utils.aoa_to_sheet(perfRows);
+    ws2['!cols'] = [{wch:40},{wch:14},{wch:12},{wch:16},{wch:10},{wch:16},{wch:24},{wch:20}];
+    ws2['!merges'] = [{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:1,c:0},e:{r:1,c:7}},{s:{r:2,c:0},e:{r:2,c:7}}];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Performance Log');
+  }
+
   const month = document.getElementById('reportMonth').value || 'report';
   XLSX.writeFile(wb, `HOA_Financial_Review_${month}.xlsx`);
 });
