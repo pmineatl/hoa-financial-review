@@ -110,7 +110,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v10</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v11</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -222,10 +222,9 @@ function renderFileList() {
     div.className = `file-item ${item.status}`;
     const statusText = {pending:'Pending', processing:'Analyzing...', done:'✓ Complete', error:'✗ Failed'}[item.status] || '';
     const sizeKB = Math.round(item.file.size / 1024);
-    const warnColor = sizeKB > 700 ? 'var(--red)' : sizeKB > 500 ? 'var(--accent-gold)' : sizeKB > 350 ? 'var(--yellow)' : 'var(--text-dim)';
-    const warnMsg = sizeKB > 700 ? `⚠ ${sizeKB} KB — XL file, strongly recommend compressing in Acrobat (50s pause)`
-      : sizeKB > 500 ? `⚠ ${sizeKB} KB — large file, consider compressing in Acrobat (35s pause)`
-      : sizeKB > 350 ? `${sizeKB} KB — medium file (20s pause)`
+    const warnColor = sizeKB > 700 ? 'var(--red)' : sizeKB > 500 ? 'var(--accent-gold)' : 'var(--text-dim)';
+    const warnMsg = sizeKB > 700 ? `⚠ ${sizeKB} KB — very large, consider compressing in Acrobat`
+      : sizeKB > 500 ? `⚠ ${sizeKB} KB — large file, consider compressing in Acrobat`
       : `${sizeKB} KB`;
     const warning = `<span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:${warnColor};margin-left:6px;">${warnMsg}</span>`;
     div.innerHTML = `<div class="file-dot"></div><span class="file-name">${item.file.name}</span>${warning}<span class="file-status">${statusText}</span>${item.status==='pending'?`<button class="file-remove" onclick="removeFile(${i})">✕</button>`:''}`;
@@ -385,17 +384,17 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     results.push(item.result);
     renderFileList();
 
-    // Tiered pause based on file size to avoid rate limits
+    // Duration-based pause — longer after slow-processing files to avoid rate limits
     if (i < files.length - 1) {
-      const sizeKB = item.file.size / 1024;
+      const durSecs = fileLog.durationSecs;
       let waitSecs, pauseTier;
-      if (sizeKB > 700)      { waitSecs = 50; pauseTier = 'XL file (>700 KB)'; }
-      else if (sizeKB > 500) { waitSecs = 35; pauseTier = 'large file (500–700 KB)'; }
-      else if (sizeKB > 350) { waitSecs = 20; pauseTier = 'medium file (350–500 KB)'; }
-      else                   { waitSecs = 10; pauseTier = 'standard'; }
+      if (durSecs > 90)      { waitSecs = 50; pauseTier = `slow analysis (${durSecs}s)`; }
+      else if (durSecs > 45) { waitSecs = 35; pauseTier = `moderate analysis (${durSecs}s)`; }
+      else if (durSecs > 15) { waitSecs = 20; pauseTier = `normal analysis (${durSecs}s)`; }
+      else                   { waitSecs = 10; pauseTier = `fast analysis (${durSecs}s)`; }
       fileLog.betweenFilePauseSecs = waitSecs;
       for (let s = waitSecs; s > 0; s--) {
-        document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (${pauseTier} pause)...`;
+        document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (${pauseTier})...`;
         await new Promise(r => setTimeout(r, 1000));
       }
     }
@@ -513,7 +512,7 @@ document.getElementById('excelBtn').addEventListener('click', () => {
     const summary = perfLog.batchSummary || {};
     const perfRows = [
       ['PMI Northeast Atlanta — Performance Log'],
-      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers: <350KB=10s, 350-500KB=20s, 500-700KB=35s, >700KB=50s`],
+      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers (by analysis duration): <15s=10s, 15-45s=20s, 45-90s=35s, >90s=50s`],
       [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`],
       [],
       ['File Name', 'File Size (KB)', 'Start Time', 'Duration (secs)', 'Attempts', 'Rate Limit Hits', 'Between-File Pause (secs)', 'Outcome']
