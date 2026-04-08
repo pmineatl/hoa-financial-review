@@ -110,7 +110,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review</div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v3</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -181,7 +181,8 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
 <script>
 const now = new Date();
 document.getElementById('headerDate').textContent = now.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-document.getElementById('reportMonth').value = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+document.getElementById('reportMonth').value = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth()+1).padStart(2,'0')}`;
 
 // API Key
 const apiKeyInput = document.getElementById('apiKeyInput');
@@ -336,7 +337,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
 
     // Pause between files to avoid rate limits (30k tokens/min)
     if (i < files.length - 1) {
-      const waitSecs = 20;
+      const waitSecs = 50;
       for (let s = waitSecs; s > 0; s--) {
         document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (rate limit pause)...`;
         await new Promise(r => setTimeout(r, 1000));
