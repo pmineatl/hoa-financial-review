@@ -333,6 +333,15 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     }
     results.push(item.result);
     renderFileList();
+
+    // Pause between files to avoid rate limits (30k tokens/min)
+    if (i < files.length - 1) {
+      const waitSecs = 20;
+      for (let s = waitSecs; s > 0; s--) {
+        document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (rate limit pause)...`;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
   }
 
   document.getElementById('progressFill').style.width = '100%';
