@@ -110,7 +110,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v6</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v7</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -356,7 +356,7 @@ document.getElementById('runBtn').addEventListener('click', async () => {
 
     // Pause between files to avoid rate limits (30k tokens/min)
     if (i < files.length - 1) {
-      const waitSecs = 60;
+      const waitSecs = 10;
       for (let s = waitSecs; s > 0; s--) {
         document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (rate limit pause)...`;
         await new Promise(r => setTimeout(r, 1000));
