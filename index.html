@@ -6,6 +6,7 @@
 <title>HOA Financial Review — PMI Northeast Atlanta</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <style>
 :root {
   --bg: #f5f2ed; --surface: #ffffff; --surface2: #f0ece4;
@@ -110,7 +111,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v11</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v13</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -222,10 +223,8 @@ function renderFileList() {
     div.className = `file-item ${item.status}`;
     const statusText = {pending:'Pending', processing:'Analyzing...', done:'✓ Complete', error:'✗ Failed'}[item.status] || '';
     const sizeKB = Math.round(item.file.size / 1024);
-    const warnColor = sizeKB > 700 ? 'var(--red)' : sizeKB > 500 ? 'var(--accent-gold)' : 'var(--text-dim)';
-    const warnMsg = sizeKB > 700 ? `⚠ ${sizeKB} KB — very large, consider compressing in Acrobat`
-      : sizeKB > 500 ? `⚠ ${sizeKB} KB — large file, consider compressing in Acrobat`
-      : `${sizeKB} KB`;
+    const warnColor = sizeKB > 700 ? 'var(--accent-gold)' : 'var(--text-dim)';
+    const warnMsg = sizeKB > 700 ? `⚠ ${sizeKB} KB — large file, consider compressing in Acrobat` : `${sizeKB} KB`;
     const warning = `<span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:${warnColor};margin-left:6px;">${warnMsg}</span>`;
     div.innerHTML = `<div class="file-dot"></div><span class="file-name">${item.file.name}</span>${warning}<span class="file-status">${statusText}</span>${item.status==='pending'?`<button class="file-remove" onclick="removeFile(${i})">✕</button>`:''}`;
     fileListEl.appendChild(div);
@@ -239,18 +238,44 @@ dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classL
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); addFiles(Array.from(e.dataTransfer.files)); });
 
-function toBase64(file) {
-  return new Promise((res,rej) => {
-    const r = new FileReader();
-    r.onload = e => res(e.target.result.split(',')[1]);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
+const MAX_PAGES = 99;
+
+async function toBase64(file) {
+  // Read raw bytes
+  const arrayBuffer = await file.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
+
+  try {
+    // Load PDF and check page count
+    const pdfDoc = await PDFLib.PDFDocument.load(uint8, { ignoreEncryption: true });
+    const totalPages = pdfDoc.getPageCount();
+
+    if (totalPages <= MAX_PAGES) {
+      // No truncation needed — convert directly
+      const base64 = btoa(String.fromCharCode(...uint8));
+      return { base64, pageCount: totalPages, truncated: false };
+    }
+
+    // Truncate to first 99 pages
+    const truncated = await PDFLib.PDFDocument.create();
+    const pageIndices = Array.from({ length: MAX_PAGES }, (_, i) => i);
+    const copiedPages = await truncated.copyPages(pdfDoc, pageIndices);
+    copiedPages.forEach(p => truncated.addPage(p));
+    const truncatedBytes = await truncated.save();
+    const base64 = btoa(String.fromCharCode(...truncatedBytes));
+    return { base64, pageCount: totalPages, truncated: true };
+
+  } catch (err) {
+    // If PDF parsing fails, send as-is and let the API handle it
+    const base64 = btoa(String.fromCharCode(...uint8));
+    return { base64, pageCount: null, truncated: false };
+  }
 }
 
 async function analyzePDF(file, monthDisplay) {
-  const base64 = await toBase64(file);
-  const prompt = `You are an expert HOA financial analyst for PMI Northeast Atlanta. Report period: ${monthDisplay}.
+  const { base64, pageCount, truncated } = await toBase64(file);
+  const truncationNote = truncated ? `\n\nNOTE: This document was ${pageCount} pages. Only the first ${MAX_PAGES} pages have been provided for analysis.` : '';
+  const prompt = `You are an expert HOA financial analyst for PMI Northeast Atlanta. Report period: ${monthDisplay}.${truncationNote}
 
 Analyze this HOA financial report package and perform the following checks:
 
@@ -307,7 +332,10 @@ Respond ONLY with valid JSON, no markdown fences:
   if (!response.ok) { const err = await response.json(); throw new Error(err.error?.message || 'API error'); }
   const data = await response.json();
   const raw = data.content.map(i => i.text || '').join('');
-  return JSON.parse(raw.replace(/```json|```/g,'').trim());
+  const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
+  parsed.__pageCount = pageCount;
+  parsed.__truncated = truncated;
+  return parsed;
 }
 
 let globalResults = [], globalMonth = '', perfLog = [];
@@ -344,18 +372,24 @@ document.getElementById('runBtn').addEventListener('click', async () => {
       attempts: 0,
       rateLimitHits: 0,
       outcome: 'pending',
-      betweenFilePauseSecs: 0
+      betweenFilePauseSecs: 0,
+      pageCount: null,
+      truncated: false
     };
 
     // Analyze with automatic retry on rate limit errors
-    const maxRetries = 2;
+    const maxRetries = 3;
     let attempt = 0;
     let success = false;
     while (attempt <= maxRetries && !success) {
       fileLog.attempts = attempt + 1;
       try {
         document.getElementById('progressLabel').textContent = `[${i+1}/${files.length}] ${item.file.name} — Analyzing...`;
-        item.result = await analyzePDF(item.file, monthDisplay);
+        const _res = await analyzePDF(item.file, monthDisplay);
+      fileLog.pageCount = _res.__pageCount;
+      fileLog.truncated = _res.__truncated || false;
+      delete _res.__pageCount; delete _res.__truncated;
+      item.result = _res;
         item.status = 'done';
         fileLog.outcome = 'success';
         success = true;
@@ -388,8 +422,8 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     if (i < files.length - 1) {
       const durSecs = fileLog.durationSecs;
       let waitSecs, pauseTier;
-      if (durSecs > 90)      { waitSecs = 50; pauseTier = `slow analysis (${durSecs}s)`; }
-      else if (durSecs > 45) { waitSecs = 35; pauseTier = `moderate analysis (${durSecs}s)`; }
+      if (durSecs > 90)      { waitSecs = 70; pauseTier = `very slow analysis (${durSecs}s)`; }
+      else if (durSecs > 45) { waitSecs = 55; pauseTier = `slow analysis (${durSecs}s)`; }
       else if (durSecs > 15) { waitSecs = 20; pauseTier = `normal analysis (${durSecs}s)`; }
       else                   { waitSecs = 10; pauseTier = `fast analysis (${durSecs}s)`; }
       fileLog.betweenFilePauseSecs = waitSecs;
@@ -512,26 +546,27 @@ document.getElementById('excelBtn').addEventListener('click', () => {
     const summary = perfLog.batchSummary || {};
     const perfRows = [
       ['PMI Northeast Atlanta — Performance Log'],
-      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers (by analysis duration): <15s=10s, 15-45s=20s, 45-90s=35s, >90s=50s`],
+      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers (by analysis duration): <15s=10s, 15-45s=20s, 45-90s=55s, >90s=70s | Max retries: 3`],
       [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`],
       [],
-      ['File Name', 'File Size (KB)', 'Start Time', 'Duration (secs)', 'Attempts', 'Rate Limit Hits', 'Between-File Pause (secs)', 'Outcome']
+      ['File Name', 'File Size (KB)', 'Page Count', 'Truncated to 99', 'Start Time', 'Duration (secs)', 'Attempts', 'Rate Limit Hits', 'Between-File Pause (secs)', 'Outcome']
     ];
     perfLog.forEach(r => {
       perfRows.push([
-        r.fileName, r.fileSizeKB, r.startTime, r.durationSecs,
+        r.fileName, r.fileSizeKB, r.pageCount || 'unknown', r.truncated ? 'YES' : 'no',
+        r.startTime, r.durationSecs,
         r.attempts, r.rateLimitHits, r.betweenFilePauseSecs, r.outcome
       ]);
     });
     // Totals row
     perfRows.push([
-      'TOTALS', '', '', `=SUM(D6:D${5+perfLog.length})`,
-      '', `=SUM(F6:F${5+perfLog.length})`, '', ''
+      'TOTALS', '', '', '', '', `=SUM(F6:F${5+perfLog.length})`,
+      '', `=SUM(H6:H${5+perfLog.length})`, '', ''
     ]);
 
     const ws2 = XLSX.utils.aoa_to_sheet(perfRows);
-    ws2['!cols'] = [{wch:40},{wch:14},{wch:12},{wch:16},{wch:10},{wch:16},{wch:24},{wch:20}];
-    ws2['!merges'] = [{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:1,c:0},e:{r:1,c:7}},{s:{r:2,c:0},e:{r:2,c:7}}];
+    ws2['!cols'] = [{wch:40},{wch:14},{wch:12},{wch:14},{wch:12},{wch:16},{wch:10},{wch:16},{wch:24},{wch:20}];
+    ws2['!merges'] = [{s:{r:0,c:0},e:{r:0,c:9}},{s:{r:1,c:0},e:{r:1,c:9}},{s:{r:2,c:0},e:{r:2,c:9}}];
     XLSX.utils.book_append_sheet(wb, ws2, 'Performance Log');
   }
 
