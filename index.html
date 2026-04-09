@@ -111,7 +111,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v16</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v17</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -292,35 +292,47 @@ STEP 2 – PRE-PAID ASSESSMENT RECONCILIATION:
 - Match → "OK". Mismatch → report both figures. Not present in document → "Not provided".
 
 STEP 3 – INCOME STATEMENT REVIEW:
-Only use the CURRENT PERIOD ACTUAL column (the first column of numbers on the income statement). Do NOT use variance columns, year-to-date columns, or budget columns for identifying negative values.
+Use ONLY the CURRENT PERIOD ACTUAL column (the first column of numbers). Never use variance, year-to-date, or budget columns to determine whether a value is negative.
 
-Produce the findings in this exact order:
+Before classifying any account, determine whether it is an INCOME account or an EXPENSE account based on its section heading in the income statement. Income accounts appear under headings like REVENUE, OTHER REVENUE, OPERATING INCOME. Expense accounts appear under headings like GENERAL/ADMINISTRATIVE, UTILITIES, LANDSCAPE, AMENITY EXPENSES, BUILDING MAINTENANCE, RESERVE EXPENSES, OPERATING EXPENSE.
 
-SECTION A — SPECIAL INCOME ITEMS (report these first, flagged as bold using **text**):
-- NSF Charges present: report account number and amount
-- Leasing Fee Income (42-30450-00) present: report amount
-- Collection Fee Income (e.g. 30800-00) present: report amount
-Only include items that actually appear with a non-zero value. If none, skip this section entirely.
+Produce findings in this exact order. Each finding is a separate string in the JSON array.
+
+SECTION A — SPECIAL INCOME ITEMS (always list these first):
+Report ONLY these three specific items if they appear with a non-zero Current Period Actual value:
+- NSF Charges (any account labeled NSF, account 30850-00 or 42-30850-00): format as "**NSF Charges: [account] ($X.XX)**"
+- Leasing Fee Income (account 42-30450-00): format as "**Leasing Fee Income: 42-30450-00 ($X.XX)**"
+- Collection/Management Collection Fee (account 30800-00): format as "**Collection Fee Income: [account] ($X.XX)**"
+These MUST be wrapped in ** ** for bold rendering. Do not include any other accounts in Section A.
 
 SECTION B — NOTABLE INCOME VARIANCES:
-- Regular Association Fee variance > 10% between Current Period Actual vs Current Period Budget: report account, actual, budget, % variance
-- Any other income account with variance > 10%: report account, actual, budget, % variance
-Skip any income account where the Current Period Budget is zero.
-If no notable income variances, skip this section.
+Only report INCOME accounts (Revenue section) where ALL of these are true:
+- The Current Period Budget is greater than zero
+- The variance between Current Period Actual and Current Period Budget exceeds 10%
+- The account is NOT one already reported in Section A
+STRICT RULE: Skip entirely if Current Period Budget is zero or blank. Do not report "infinite variance" or "no budget set" items.
+Format: "Income variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
 
 SECTION C — NEGATIVE EXPENSE ACTUALS:
-- Any expense account where the Current Period Actual value is negative: report account name/number and the negative amount
-Do NOT report negative variances — only report accounts where the actual dollar amount itself is negative in the Current Period Actual column.
-If none, skip this section.
+Only report EXPENSE accounts (not income accounts) where the Current Period Actual dollar value is a negative number.
+Do NOT include income accounts here even if their actual value is negative — those belong in Section B.
+Do NOT report this section based on variance column values — only use the Current Period Actual column.
+STRICT RULE: An account is only included here if its Current Period Actual is literally a negative dollar amount (shown in parentheses or with a minus sign in the Actual column).
+Format: "Negative expense: [account name] ([account #]) ($X.XX)"
 
 SECTION D — NOTABLE EXPENSE VARIANCES:
-- Any expense account with variance > 10% between Current Period Actual vs Current Period Budget: report account, actual, budget, % variance
-Skip any expense account where the Current Period Budget is zero.
-If no notable expense variances, skip this section.
+Only report EXPENSE accounts where ALL of these are true:
+- The Current Period Budget is greater than zero
+- The variance between Current Period Actual and Current Period Budget exceeds 10%
+STRICT RULE: Skip entirely if Current Period Budget is zero or blank. Do not report "infinite variance", "no budget set", or "budget is zero" items.
+Format: "Expense variance: [account name] ([account #]) — Actual: $X.XX, Budget: $X.XX, Variance: X.X%"
 
-If ALL four sections are empty → return ["OK"]
-
-Each finding should be a separate string in the array. For Section A items, wrap the text in ** ** so they render as bold. Example: "**NSF Charges present: 30850-00 ($25.00)**"
+IMPORTANT RULES THAT APPLY TO ALL SECTIONS:
+- Never report any item with a zero Current Period Budget in Section B or D
+- Never report "infinite variance", "no budget", "budget is zero", or "N/A variance" items
+- Never classify an income account as a negative expense
+- Section A items MUST use ** ** bold markers
+- If all four sections are empty → return ["OK"]
 
 Extract the community/association name from the document.
 
@@ -330,7 +342,7 @@ Respond ONLY with valid JSON, no markdown fences:
   "bsOperating": "OK or issue description",
   "bsReserve": "OK or issue description",
   "prepaid": "OK or issue description",
-  "incomeStatement": ["OK"] or ["**NSF Charges present: 30850-00 ($25.00)**", "Income variance: ...", "Negative expense: ...", "Expense variance: ..."]
+  "incomeStatement": ["OK"] or ["**NSF Charges: 30850-00 ($25.00)**", "Income variance: ...", "Negative expense: ...", "Expense variance: ..."]
 }`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -449,14 +461,14 @@ document.getElementById('runBtn').addEventListener('click', async () => {
     results.push(item.result);
     renderFileList();
 
-    // Duration-based pause — longer after slow-processing files to avoid rate limits
+    // Duration-based pause — Tier 2 timings (90k tokens/min)
     if (i < files.length - 1) {
       const durSecs = fileLog.durationSecs;
       let waitSecs, pauseTier;
-      if (durSecs > 90)      { waitSecs = 70; pauseTier = `very slow analysis (${durSecs}s)`; }
-      else if (durSecs > 45) { waitSecs = 55; pauseTier = `slow analysis (${durSecs}s)`; }
-      else if (durSecs > 15) { waitSecs = 20; pauseTier = `normal analysis (${durSecs}s)`; }
-      else                   { waitSecs = 10; pauseTier = `fast analysis (${durSecs}s)`; }
+      if (durSecs > 90)      { waitSecs = 30; pauseTier = `very slow analysis (${durSecs}s)`; }
+      else if (durSecs > 45) { waitSecs = 20; pauseTier = `slow analysis (${durSecs}s)`; }
+      else if (durSecs > 15) { waitSecs = 8;  pauseTier = `normal analysis (${durSecs}s)`; }
+      else                   { waitSecs = 5;  pauseTier = `fast analysis (${durSecs}s)`; }
       fileLog.betweenFilePauseSecs = waitSecs;
       for (let s = waitSecs; s > 0; s--) {
         document.getElementById('progressLabel').textContent = `Waiting ${s}s before next file (${pauseTier})...`;
@@ -586,7 +598,7 @@ document.getElementById('excelBtn').addEventListener('click', () => {
     const summary = perfLog.batchSummary || {};
     const perfRows = [
       ['PMI Northeast Atlanta — Performance Log'],
-      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers (by analysis duration): <15s=10s, 15-45s=20s, 45-90s=55s, >90s=70s | Max retries: 3`],
+      [`Run Date: ${summary.runDate || ''}   |   Run Time: ${summary.runTime || ''}   |   Pause tiers Tier 2 (by analysis duration): <15s=5s, 15-45s=8s, 45-90s=20s, >90s=30s | Max retries: 3`],
       [`Total Files: ${summary.totalFiles || perfLog.length}   |   Total Duration: ${summary.totalDurationSecs || ''}s   |   Total Rate Limit Hits: ${summary.totalRateLimitHits || 0}`],
       [],
       ['File Name', 'File Size (KB)', 'Page Count', 'Truncated to 99', 'Start Time', 'Duration (secs)', 'Attempts', 'Rate Limit Hits', 'Between-File Pause (secs)', 'Outcome']
