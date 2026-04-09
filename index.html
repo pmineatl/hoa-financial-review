@@ -111,7 +111,7 @@ tbody td:first-child { font-weight: 500; white-space: nowrap; color: var(--accen
   <div class="header">
     <div>
       <div class="logo-eyebrow">PMI Northeast Atlanta</div>
-      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v14</span></div>
+      <div class="logo-title">HOA Financial Review <span style="font-size:14px;font-family:'IBM Plex Mono',monospace;color:var(--accent-gold);font-weight:400;">v16</span></div>
     </div>
     <div class="header-date" id="headerDate"></div>
   </div>
@@ -291,15 +291,36 @@ STEP 2 – PRE-PAID ASSESSMENT RECONCILIATION:
 - Compare Balance Sheet "Pre-Paid Assessments" line to the total on the Pre-Paid Homeowners list.
 - Match → "OK". Mismatch → report both figures. Not present in document → "Not provided".
 
-STEP 3 – INCOME STATEMENT REVIEW (Current Period column):
-Check for ALL of the following:
-1. Any income account with a negative value — report account name/number and amount
-2. Any expense account with a negative value — report account name/number and amount
-3. Account 42-30450-00 Leasing Fee Income — report if present and amount
-4. NSF charges — report if present and amount
-5. Collection Fee Income (e.g. 30800-00) — report if present and amount
-6. Variances > 10% between Current Period Actual vs Current Period Budget — report account, actual, budget, % variance. Skip if budget is zero.
-If nothing flagged → return ["OK"]
+STEP 3 – INCOME STATEMENT REVIEW:
+Only use the CURRENT PERIOD ACTUAL column (the first column of numbers on the income statement). Do NOT use variance columns, year-to-date columns, or budget columns for identifying negative values.
+
+Produce the findings in this exact order:
+
+SECTION A — SPECIAL INCOME ITEMS (report these first, flagged as bold using **text**):
+- NSF Charges present: report account number and amount
+- Leasing Fee Income (42-30450-00) present: report amount
+- Collection Fee Income (e.g. 30800-00) present: report amount
+Only include items that actually appear with a non-zero value. If none, skip this section entirely.
+
+SECTION B — NOTABLE INCOME VARIANCES:
+- Regular Association Fee variance > 10% between Current Period Actual vs Current Period Budget: report account, actual, budget, % variance
+- Any other income account with variance > 10%: report account, actual, budget, % variance
+Skip any income account where the Current Period Budget is zero.
+If no notable income variances, skip this section.
+
+SECTION C — NEGATIVE EXPENSE ACTUALS:
+- Any expense account where the Current Period Actual value is negative: report account name/number and the negative amount
+Do NOT report negative variances — only report accounts where the actual dollar amount itself is negative in the Current Period Actual column.
+If none, skip this section.
+
+SECTION D — NOTABLE EXPENSE VARIANCES:
+- Any expense account with variance > 10% between Current Period Actual vs Current Period Budget: report account, actual, budget, % variance
+Skip any expense account where the Current Period Budget is zero.
+If no notable expense variances, skip this section.
+
+If ALL four sections are empty → return ["OK"]
+
+Each finding should be a separate string in the array. For Section A items, wrap the text in ** ** so they render as bold. Example: "**NSF Charges present: 30850-00 ($25.00)**"
 
 Extract the community/association name from the document.
 
@@ -309,7 +330,7 @@ Respond ONLY with valid JSON, no markdown fences:
   "bsOperating": "OK or issue description",
   "bsReserve": "OK or issue description",
   "prepaid": "OK or issue description",
-  "incomeStatement": ["OK"] or ["issue 1", "issue 2"]
+  "incomeStatement": ["OK"] or ["**NSF Charges present: 30850-00 ($25.00)**", "Income variance: ...", "Negative expense: ...", "Expense variance: ..."]
 }`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -398,7 +419,13 @@ document.getElementById('runBtn').addEventListener('click', async () => {
         fileLog.outcome = 'success';
         success = true;
       } catch (err) {
-        const isRateLimit = err.message && err.message.toLowerCase().includes('rate limit');
+        const isRateLimit = err.message && (err.message.toLowerCase().includes('rate limit') || err.message.toLowerCase().includes('rate_limit'));
+        const isTokenLimit = err.message && err.message.toLowerCase().includes('too long');
+        if (isTokenLimit) { 
+          item.status = 'error';
+          item.result = { communityName: item.file.name.replace('.pdf',''), bsOperating: 'Error: Document too large for API (token limit exceeded). Compress in Acrobat and retry.', bsReserve: 'Error', prepaid: 'Error', incomeStatement: ['Error'] };
+          break;
+        }
         if (isRateLimit && attempt < maxRetries) {
           attempt++;
           fileLog.rateLimitHits++;
@@ -502,7 +529,16 @@ function renderCell(val) {
 function renderISCell(val) {
   if (isOK(val)) return '<span class="cell-ok">OK</span>';
   if (!Array.isArray(val)) return `<span class="cell-warn">${esc(String(val))}</span>`;
-  return val.map(v => v.toString().toUpperCase().trim()==='OK' ? '<span class="cell-ok">OK</span>' : `<span class="cell-warn-line cell-warn">${esc(v)}</span>`).join('');
+  return val.map(v => {
+    if (v.toString().toUpperCase().trim() === 'OK') return '<span class="cell-ok">OK</span>';
+    // Render **bold** items (Section A special items)
+    const isBold = v.startsWith('**') && v.endsWith('**');
+    const text = isBold ? v.slice(2, -2) : v;
+    const style = isBold
+      ? 'class="cell-warn-line" style="display:block;padding:2px 0;font-weight:600;color:var(--red);"'
+      : 'class="cell-warn-line cell-warn"';
+    return `<span ${style}>${esc(text)}</span>`;
+  }).join('');
 }
 function esc(str) { const d=document.createElement('div'); d.appendChild(document.createTextNode(String(str))); return d.innerHTML; }
 function showError(msg) { const b=document.getElementById('errorBox'); b.textContent=msg; b.classList.add('visible'); }
@@ -525,7 +561,7 @@ document.getElementById('excelBtn').addEventListener('click', () => {
   globalResults.forEach(a => {
     const bsOpOK=isOK(a.bsOperating), bsResOK=isOK(a.bsReserve), ppOK=isOK(a.prepaid), isOKr=isOK(a.incomeStatement);
     const status = (!bsOpOK||!bsResOK||!ppOK) ? 'CRITICAL' : !isOKr ? 'WARNING' : 'OK';
-    const isText = Array.isArray(a.incomeStatement) ? a.incomeStatement.join('\n') : String(a.incomeStatement||'');
+    const isText = Array.isArray(a.incomeStatement) ? a.incomeStatement.map(s => s.replace(/\*\*/g, '')).join('\n') : String(a.incomeStatement||'').replace(/\*\*/g, '');
     rows.push([
       a.communityName || 'Unknown',
       bsOpOK ? 'OK' : String(a.bsOperating||''),
